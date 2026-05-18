@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║          PONYIN AI AGENT SOLANA TRADING BOT                     ║
+║          NDA4 AI AGENT SOLANA TRADING BOT                     ║
 ║          Auto Trade | Auto Learn | Auto Improve                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 
