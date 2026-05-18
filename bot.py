@@ -23,23 +23,24 @@ from datetime import datetime, timedelta
 from typing import Optional
 from dataclasses import dataclass, field, asdict
 from collections import deque
-import anthropic
 
 # ──────────────────────────────────────────────────────────────────
 # CONFIG — isi semua ini di .env atau langsung di sini
 # ──────────────────────────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
-ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY", "YOUR_ANTHROPIC_KEY")
+TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
+TELEGRAM_CHAT_ID    = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
+OPENROUTER_API_KEY  = os.getenv("OPENROUTER_API_KEY", "YOUR_OPENROUTER_KEY")
+OPENROUTER_MODEL    = os.getenv("OPENROUTER_MODEL", "openrouter/owl-alpha")
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Trading parameters
-INITIAL_BALANCE_SOL = float(os.getenv("INITIAL_BALANCE", "1.0"))
-TRADE_SIZE_SOL      = float(os.getenv("TRADE_SIZE", "0.03"))
-MAX_OPEN_TRADES     = int(os.getenv("MAX_OPEN_TRADES", "5"))
-SCAN_INTERVAL_SEC   = int(os.getenv("SCAN_INTERVAL", "60"))   # scan tiap 60 detik
-REPORT_INTERVAL_SEC = 3600                                      # report tiap 1 jam
-TARGET_WIN_RATE     = 0.55                                      # target WR 55%
-CONSECUTIVE_LOSS_TRIGGER = 3                                    # improve setelah 3x loss
+INITIAL_BALANCE_SOL      = float(os.getenv("INITIAL_BALANCE", "1.0"))
+TRADE_SIZE_SOL           = float(os.getenv("TRADE_SIZE", "0.03"))
+MAX_OPEN_TRADES          = int(os.getenv("MAX_OPEN_TRADES", "5"))
+SCAN_INTERVAL_SEC        = int(os.getenv("SCAN_INTERVAL", "60"))
+REPORT_INTERVAL_SEC      = 3600
+TARGET_WIN_RATE          = 0.55
+CONSECUTIVE_LOSS_TRIGGER = 3
 
 # ──────────────────────────────────────────────────────────────────
 # DATA STRUCTURES
@@ -52,20 +53,20 @@ class FilterConfig:
     min_volume_24h_usd: float = 50_000
     min_holder_count: int = 100
     max_price_impact_pct: float = 3.0
-    min_price_change_5m: float = 2.0      # minimum pump 5m (%)
-    max_price_change_5m: float = 25.0     # max pump 5m supaya ga masuk puncak
+    min_price_change_5m: float = 2.0
+    max_price_change_5m: float = 25.0
     min_tx_count_5m: int = 20
-    min_buy_sell_ratio: float = 1.5       # buy > sell
+    min_buy_sell_ratio: float = 1.5
     min_market_cap_usd: float = 50_000
     max_market_cap_usd: float = 5_000_000
     require_renounced: bool = False
     require_burned_lp: bool = False
-    bundle_threshold: float = 0.25        # max bundle supply %
-    min_age_minutes: int = 5             # token harus minimal 5 menit old
+    bundle_threshold: float = 0.25
+    min_age_minutes: int = 5
     max_age_hours: int = 24
-    tp_multiplier: float = 1.25          # TP = entry * 1.25
-    sl_multiplier: float = 0.92          # SL = entry * 0.92
-    generation: int = 1                  # versi filter (naik tiap improve)
+    tp_multiplier: float = 1.25
+    sl_multiplier: float = 0.92
+    generation: int = 1
 
     def to_prompt(self) -> str:
         return f"""
@@ -115,13 +116,13 @@ class Trade:
     id: str
     token_address: str
     token_symbol: str
-    entry_type: str        # "market" atau "limit"
+    entry_type: str
     entry_price: float
     entry_price_sol: float
     tp_price: float
     sl_price: float
     size_sol: float
-    status: str            # "pending_limit" | "open" | "tp_hit" | "sl_hit" | "cancelled"
+    status: str
     opened_at: float
     closed_at: Optional[float] = None
     exit_price: Optional[float] = None
@@ -182,6 +183,7 @@ class BotState:
             and self.balance_sol >= TRADE_SIZE_SOL
         )
 
+
 # ──────────────────────────────────────────────────────────────────
 # SCANNER — Real-time DexScreener scan
 # ──────────────────────────────────────────────────────────────────
@@ -190,10 +192,8 @@ class SolanaScanner:
     BASE_URL = "https://api.dexscreener.com/latest/dex"
 
     async def get_trending_tokens(self, session: aiohttp.ClientSession) -> list[TokenData]:
-        """Ambil token trending di Solana dari DexScreener"""
         tokens = []
         try:
-            # Cari token Solana yang baru dan trending
             url = f"{self.BASE_URL}/search?q=SOL"
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
                 if r.status != 200:
@@ -202,22 +202,18 @@ class SolanaScanner:
                 pairs = data.get("pairs", [])
 
             sol_pairs = [p for p in pairs if p.get("chainId") == "solana"]
-
-            for p in sol_pairs[:50]:  # ambil max 50 pasang
+            for p in sol_pairs[:50]:
                 try:
                     token = self._parse_pair(p)
                     if token:
                         tokens.append(token)
                 except Exception:
                     continue
-
         except Exception as e:
             logging.warning(f"Scanner error: {e}")
-
         return tokens
 
     async def get_new_tokens(self, session: aiohttp.ClientSession) -> list[TokenData]:
-        """Ambil token baru di Solana (pump.fun style)"""
         tokens = []
         try:
             url = f"{self.BASE_URL}/tokens/solana"
@@ -234,14 +230,11 @@ class SolanaScanner:
                         tokens.append(token)
                 except Exception:
                     continue
-
         except Exception as e:
             logging.warning(f"New tokens scanner error: {e}")
-
         return tokens
 
     async def get_token_detail(self, session: aiohttp.ClientSession, address: str) -> Optional[TokenData]:
-        """Ambil detail 1 token untuk update harga"""
         try:
             url = f"{self.BASE_URL}/tokens/{address}"
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as r:
@@ -251,7 +244,6 @@ class SolanaScanner:
                 pairs = data.get("pairs", [])
                 if not pairs:
                     return None
-                # Ambil pair dengan liquidity tertinggi
                 best = max(pairs, key=lambda x: float(x.get("liquidity", {}).get("usd", 0) or 0))
                 return self._parse_pair(best)
         except Exception:
@@ -260,7 +252,6 @@ class SolanaScanner:
     def _parse_pair(self, p: dict) -> Optional[TokenData]:
         try:
             base = p.get("baseToken", {})
-            quote = p.get("quoteToken", {})
             price_usd = float(p.get("priceUsd", 0) or 0)
             price_native = float(p.get("priceNative", 0) or 0)
             liq = p.get("liquidity", {})
@@ -269,11 +260,9 @@ class SolanaScanner:
             txns_5m = p.get("txns", {}).get("m5", {})
             info = p.get("info", {})
 
-            # Age calculation
             created_at = p.get("pairCreatedAt", 0)
             age_minutes = (time.time()*1000 - (created_at or time.time()*1000)) / 60000
 
-            # Holders dari info (tidak selalu ada)
             holders = 0
             for ext in (info.get("extensions") or []):
                 if isinstance(ext, dict) and ext.get("type") == "holders":
@@ -311,14 +300,46 @@ class SolanaScanner:
 
 
 # ──────────────────────────────────────────────────────────────────
-# AI AGENT — Claude decides entry, TP, SL, and improves filters
+# AI AGENT — OpenRouter (owl-alpha) decides entry, TP, SL, improves filters
 # ──────────────────────────────────────────────────────────────────
 
 class AIAgent:
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        self.headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "HTTP-Referer": "https://github.com/nda4-trading-bot",  # opsional, untuk OpenRouter ranking
+            "X-Title": "NDA4 Solana Trading Bot",                   # opsional
+        }
 
-    def analyze_token(self, token: TokenData, state: BotState) -> Optional[dict]:
+    async def _call_api(self, session: aiohttp.ClientSession, prompt: str, max_tokens: int = 400) -> Optional[str]:
+        """Panggil OpenRouter API dan kembalikan teks response"""
+        payload = {
+            "model": OPENROUTER_MODEL,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ]
+        }
+        try:
+            async with session.post(
+                OPENROUTER_BASE_URL,
+                headers=self.headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as r:
+                if r.status != 200:
+                    err = await r.text()
+                    logging.error(f"OpenRouter API error {r.status}: {err}")
+                    return None
+                data = await r.json()
+                text = data["choices"][0]["message"]["content"]
+                return text.strip()
+        except Exception as e:
+            logging.error(f"OpenRouter call error: {e}")
+            return None
+
+    async def analyze_token(self, session: aiohttp.ClientSession, token: TokenData, state: BotState) -> Optional[dict]:
         """AI memutuskan apakah masuk trade dan bagaimana"""
         prompt = f"""
 Kamu adalah AI trading agent Solana on-chain. Tugasmu: analisis token dan tentukan apakah layak di-trade.
@@ -370,21 +391,17 @@ Jawab HANYA dengan JSON ini (tanpa backtick, tanpa penjelasan):
   "skip_reason": "jika SKIP, kenapa"
 }}
 """
+        text = await self._call_api(session, prompt, max_tokens=400)
+        if not text:
+            return None
         try:
-            resp = self.client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=400,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            text = resp.content[0].text.strip()
-            # Bersihkan kalau ada backtick
             text = text.replace("```json", "").replace("```", "").strip()
             return json.loads(text)
         except Exception as e:
-            logging.error(f"AI analyze error: {e}")
+            logging.error(f"AI analyze parse error: {e} | raw: {text}")
             return None
 
-    def improve_filters(self, state: BotState) -> FilterConfig:
+    async def improve_filters(self, session: aiohttp.ClientSession, state: BotState) -> tuple:
         """AI improve filter setelah 3x loss berturut-turut"""
         recent = state.recent_losses
         losses_info = "\n".join([
@@ -436,38 +453,36 @@ Jawab HANYA dengan JSON (tanpa backtick):
   "improvement_notes": "apa yang diubah dan kenapa"
 }}
 """
+        text = await self._call_api(session, prompt, max_tokens=600)
+        if not text:
+            return self._fallback_improve(current)
+
         try:
-            resp = self.client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=600,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            text = resp.content[0].text.strip()
             text = text.replace("```json", "").replace("```", "").strip()
             data = json.loads(text)
             notes = data.pop("improvement_notes", "")
-
             new_filters = FilterConfig(**{k: v for k, v in data.items()}, generation=current.generation + 1)
             return new_filters, notes
         except Exception as e:
-            logging.error(f"AI improve error: {e}")
-            # Fallback: manual tighten
-            import copy
-            f = copy.copy(current)
-            f.min_liquidity_usd *= 1.3
-            f.min_volume_24h_usd *= 1.3
-            f.min_buy_sell_ratio = min(f.min_buy_sell_ratio + 0.2, 3.0)
-            f.generation += 1
-            return f, "Auto-tighten fallback: naikkan liquidity & volume requirement 30%"
+            logging.error(f"AI improve parse error: {e}")
+            return self._fallback_improve(current)
+
+    def _fallback_improve(self, current: FilterConfig) -> tuple:
+        import copy
+        f = copy.copy(current)
+        f.min_liquidity_usd *= 1.3
+        f.min_volume_24h_usd *= 1.3
+        f.min_buy_sell_ratio = min(f.min_buy_sell_ratio + 0.2, 3.0)
+        f.generation += 1
+        return f, "Auto-tighten fallback: naikkan liquidity & volume requirement 30%"
 
 
 # ──────────────────────────────────────────────────────────────────
-# FILTER ENGINE — pre-filter sebelum ke AI
+# FILTER ENGINE
 # ──────────────────────────────────────────────────────────────────
 
 class FilterEngine:
     def passes(self, token: TokenData, cfg: FilterConfig) -> tuple[bool, str]:
-        """Return (passed, reason_if_failed)"""
         if token.liquidity_usd < cfg.min_liquidity_usd:
             return False, f"Liquidity ${token.liquidity_usd:,.0f} < ${cfg.min_liquidity_usd:,.0f}"
         if token.volume_24h < cfg.min_volume_24h_usd:
@@ -568,8 +583,6 @@ Bot akan lebih selektif dalam memilih entry. 💪
         finished = state.finished_trades
         pending = [t for t in open_trades if t.status == "pending_limit"]
         running = [t for t in open_trades if t.status == "open"]
-
-        # Summary
         uptime = timedelta(seconds=int(time.time() - state.started_at))
 
         lines = [
@@ -587,7 +600,6 @@ Bot akan lebih selektif dalam memilih entry. 💪
             f"",
         ]
 
-        # Running trades
         if running:
             lines.append(f"🟢 <b>POSISI TERBUKA ({len(running)})</b>")
             for t in running:
@@ -600,7 +612,6 @@ Bot akan lebih selektif dalam memilih entry. 💪
                 lines.append(f"  🎯 TP: ${t.tp_price:.6f} | 🛑 SL: ${t.sl_price:.6f}")
             lines.append("")
 
-        # Pending limit orders
         if pending:
             lines.append(f"🟡 <b>LIMIT ORDER MENUNGGU ({len(pending)})</b>")
             for t in pending:
@@ -610,7 +621,6 @@ Bot akan lebih selektif dalam memilih entry. 💪
                 )
             lines.append("")
 
-        # Recent closed trades (max 5)
         recent_closed = [t for t in finished[-5:] if t.status in ("tp_hit", "sl_hit")]
         if recent_closed:
             lines.append(f"📋 <b>TRADE TERAKHIR</b>")
@@ -621,6 +631,7 @@ Bot akan lebih selektif dalam memilih entry. 💪
 
         lines.append(f"🔍 Scan: {state.scanned_tokens_today} token | Skip: {state.skipped_tokens_today}")
         lines.append(f"⚙️ Filter Gen #{state.filters.generation} | Improve: {state.improve_count}x")
+        lines.append(f"🤖 Model: {OPENROUTER_MODEL}")
 
         return "\n".join(lines)
 
@@ -632,10 +643,10 @@ Bot akan lebih selektif dalam memilih entry. 💪
 class TradingEngine:
     def __init__(self):
         self.scanner = SolanaScanner()
-        self.ai = AIAgent()
-        self.filter = FilterEngine()
-        self.tg = TelegramBot()
-        self.state = BotState()
+        self.ai      = AIAgent()
+        self.filter  = FilterEngine()
+        self.tg      = TelegramBot()
+        self.state   = BotState()
         self.seen_tokens: set = set()
         self.trade_counter = 0
 
@@ -646,10 +657,7 @@ class TradingEngine:
     async def run(self):
         logging.info("🚀 Bot started!")
         async with aiohttp.ClientSession() as session:
-            # Kirim startup message
             await self.tg.send(session, self._startup_message())
-
-            # Jalankan semua loop bersamaan
             await asyncio.gather(
                 self._scan_loop(session),
                 self._price_update_loop(session),
@@ -658,7 +666,7 @@ class TradingEngine:
 
     def _startup_message(self) -> str:
         return f"""
-🤖 <b>PONYIN AI TRADING BOT STARTED</b>
+🤖 <b>NDA4 AI TRADING BOT STARTED</b>
 
 💼 Balance: {INITIAL_BALANCE_SOL} SOL
 📦 Trade Size: {TRADE_SIZE_SOL} SOL per trade
@@ -667,13 +675,13 @@ class TradingEngine:
 🔍 Scan Interval: {SCAN_INTERVAL_SEC}s
 📊 Report Interval: 1 jam
 🔧 Filter Gen: #1
+🤖 AI Model: {OPENROUTER_MODEL}
 
 Bot sedang aktif scan token Solana secara real-time...
 Notifikasi akan dikirim untuk setiap trade & report per jam. 📡
 """.strip()
 
     async def _scan_loop(self, session: aiohttp.ClientSession):
-        """Loop scan token baru"""
         while True:
             try:
                 await self._do_scan(session)
@@ -686,10 +694,8 @@ Notifikasi akan dikirim untuk setiap trade & report per jam. 📡
             logging.info(f"Skip scan: balance={self.state.balance_sol:.3f} SOL, open={len(self.state.open_trades)}")
             return
 
-        # Ambil token dari scanner
-        trending = await self.scanner.get_trending_tokens(session)
+        trending   = await self.scanner.get_trending_tokens(session)
         new_tokens = await self.scanner.get_new_tokens(session)
-
         all_tokens = {t.address: t for t in (trending + new_tokens)}.values()
         self.state.scanned_tokens_today += len(list(all_tokens))
 
@@ -697,51 +703,40 @@ Notifikasi akan dikirim untuk setiap trade & report per jam. 📡
         for token in all_tokens:
             if not token.address:
                 continue
-            # Skip jika sudah ada di open trades
             open_addresses = {t.token_address for t in self.state.open_trades}
             if token.address in open_addresses:
                 continue
-
-            # Pre-filter
             passed, reason = self.filter.passes(token, self.state.filters)
             if not passed:
                 self.state.skipped_tokens_today += 1
                 logging.debug(f"SKIP {token.symbol}: {reason}")
                 continue
-
             candidates.append(token)
 
         if not candidates:
-            logging.info(f"No candidates passed filters this scan")
+            logging.info("No candidates passed filters this scan")
             return
 
-        # Sort by momentum
         candidates.sort(key=lambda t: t.price_change_5m, reverse=True)
 
-        # AI evaluate top candidates (max 3 per scan biar hemat API call)
         for token in candidates[:3]:
             if not self.state.can_open_trade():
                 break
-
-            decision = self.ai.analyze_token(token, self.state)
+            # ✅ Pass session to async AI call
+            decision = await self.ai.analyze_token(session, token, self.state)
             if not decision:
                 continue
-
             if decision.get("action") == "BUY" and decision.get("confidence", 0) >= 60:
                 await self._open_trade(session, token, decision)
-                # Delay kecil antar trade
                 await asyncio.sleep(2)
 
     async def _open_trade(self, session: aiohttp.ClientSession, token: TokenData, decision: dict):
-        """Buka trade baru"""
-        entry_type = decision.get("entry_type", "market")
+        entry_type  = decision.get("entry_type", "market")
         entry_price = float(decision.get("entry_price_usd", token.price_usd))
-        tp_price = float(decision.get("tp_price_usd", entry_price * self.state.filters.tp_multiplier))
-        sl_price = float(decision.get("sl_price_usd", entry_price * self.state.filters.sl_multiplier))
-        reasoning = decision.get("reasoning", "")
+        tp_price    = float(decision.get("tp_price_usd", entry_price * self.state.filters.tp_multiplier))
+        sl_price    = float(decision.get("sl_price_usd", entry_price * self.state.filters.sl_multiplier))
+        reasoning   = decision.get("reasoning", "")
 
-        # Hitung entry price SOL equivalent
-        # Asumsikan SOL/USD ≈ ambil dari token price ratio
         sol_usd = token.price_usd / token.price_sol if token.price_sol > 0 else 150
 
         trade = Trade(
@@ -768,13 +763,12 @@ Notifikasi akan dikirim untuk setiap trade & report per jam. 📡
         await self.tg.send(session, self.tg.format_trade_open(trade))
 
     async def _price_update_loop(self, session: aiohttp.ClientSession):
-        """Loop update harga open trades dan cek TP/SL"""
         while True:
             try:
                 await self._update_prices(session)
             except Exception as e:
                 logging.error(f"Price update error: {e}")
-            await asyncio.sleep(15)  # update tiap 15 detik
+            await asyncio.sleep(15)
 
     async def _update_prices(self, session: aiohttp.ClientSession):
         for trade in list(self.state.open_trades):
@@ -784,9 +778,8 @@ Notifikasi akan dikirim untuk setiap trade & report per jam. 📡
 
             current_price = token_data.price_usd
             trade.current_price = current_price
-            trade.last_updated = time.time()
+            trade.last_updated  = time.time()
 
-            # Cek apakah limit order sudah terpenuhi
             if trade.status == "pending_limit":
                 if current_price <= trade.entry_price:
                     trade.status = "open"
@@ -798,32 +791,28 @@ Notifikasi akan dikirim untuk setiap trade & report per jam. 📡
                     )
                 continue
 
-            # Cek TP
             if current_price >= trade.tp_price:
                 await self._close_trade(session, trade, current_price, "tp_hit")
-            # Cek SL
             elif current_price <= trade.sl_price:
                 await self._close_trade(session, trade, current_price, "sl_hit")
 
     async def _close_trade(self, session: aiohttp.ClientSession, trade: Trade, exit_price: float, reason: str):
-        """Tutup trade dan update state"""
         trade.exit_price = exit_price
-        trade.closed_at = time.time()
-        trade.status = reason
+        trade.closed_at  = time.time()
+        trade.status     = reason
 
-        # Hitung PnL
         pct = (exit_price - trade.entry_price) / trade.entry_price
         trade.pnl_pct = pct * 100
         trade.pnl_sol = pct * trade.size_sol
         self.state.total_pnl_sol += trade.pnl_sol
-        self.state.balance_sol += TRADE_SIZE_SOL + trade.pnl_sol  # kembalikan modal + pnl
+        self.state.balance_sol   += TRADE_SIZE_SOL + trade.pnl_sol
 
         won = reason == "tp_hit"
         if won:
-            self.state.winning_trades += 1
+            self.state.winning_trades    += 1
             self.state.consecutive_losses = 0
         else:
-            self.state.losing_trades += 1
+            self.state.losing_trades      += 1
             self.state.consecutive_losses += 1
             self.state.recent_losses.append(trade)
 
@@ -832,29 +821,25 @@ Notifikasi akan dikirim untuk setiap trade & report per jam. 📡
             f"@ ${exit_price:.8f} | PnL: {trade.pnl_sol:+.4f} SOL ({trade.pnl_pct:+.1f}%)"
         )
 
-        # Kirim notifikasi close
         await self.tg.send(session, self.tg.format_trade_close(trade))
 
-        # Cek apakah perlu improve filter
         if self.state.consecutive_losses >= CONSECUTIVE_LOSS_TRIGGER:
             await self._improve_filters(session)
 
     async def _improve_filters(self, session: aiohttp.ClientSession):
-        """AI improve filter setelah consecutive loss"""
         old_gen = self.state.filters.generation
         logging.info(f"🔧 Improving filters (gen {old_gen})...")
 
-        new_filters, notes = self.ai.improve_filters(self.state)
-        self.state.filters = new_filters
+        # ✅ Pass session to async AI call
+        new_filters, notes = await self.ai.improve_filters(session, self.state)
+        self.state.filters            = new_filters
         self.state.consecutive_losses = 0
-        self.state.improve_count += 1
+        self.state.improve_count     += 1
 
         logging.info(f"✅ Filter improved: gen {old_gen} → {new_filters.generation}")
         await self.tg.send(session, self.tg.format_filter_improve(old_gen, new_filters.generation, notes))
 
     async def _report_loop(self, session: aiohttp.ClientSession):
-        """Kirim report tiap 1 jam"""
-        # Tunggu 1 jam pertama
         await asyncio.sleep(REPORT_INTERVAL_SEC)
         while True:
             try:
@@ -882,11 +867,10 @@ async def main():
         ]
     )
 
-    # Validasi config
     missing = []
-    if TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN": missing.append("TELEGRAM_BOT_TOKEN")
-    if TELEGRAM_CHAT_ID == "YOUR_CHAT_ID": missing.append("TELEGRAM_CHAT_ID")
-    if ANTHROPIC_API_KEY == "YOUR_ANTHROPIC_KEY": missing.append("ANTHROPIC_API_KEY")
+    if TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":   missing.append("TELEGRAM_BOT_TOKEN")
+    if TELEGRAM_CHAT_ID   == "YOUR_CHAT_ID":     missing.append("TELEGRAM_CHAT_ID")
+    if OPENROUTER_API_KEY == "YOUR_OPENROUTER_KEY": missing.append("OPENROUTER_API_KEY")
 
     if missing:
         print(f"\n❌ Set environment variables dulu: {', '.join(missing)}")
