@@ -39,7 +39,7 @@ from pathlib import Path
 TELEGRAM_BOT_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 TELEGRAM_CHAT_ID     = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 OPENROUTER_API_KEY   = os.getenv("OPENROUTER_API_KEY", "YOUR_OPENROUTER_KEY")
-OPENROUTER_MODEL     = os.getenv("OPENROUTER_MODEL", "anthropic/claude-3-haiku")
+OPENROUTER_MODEL     = os.getenv("OPENROUTER_MODEL", "openrouter/owl-alpha")
 OPENROUTER_BASE_URL  = "https://openrouter.ai/api/v1/chat/completions"
 
 # Mode: set PAPER_TRADE=false untuk live (hati-hati!)
